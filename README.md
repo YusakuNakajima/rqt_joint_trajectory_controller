@@ -27,12 +27,12 @@ current state, so the velocity jumps on every command and real robots
    cubic spline from its current position *and velocity* to the target at rest,
    so a new command blends with the motion in progress with continuous velocity.
 3. **Velocity-limited duration that accounts for the motion in progress.** The
-   cubic's peak velocity is computed from each joint's starting velocity (both
-   the measured and the reference velocity in `controller_state`), and the
-   duration is lengthened until no joint exceeds speed scaling x URDF velocity
+   cubic's peak velocity is computed for every state the controller may start
+   from (measured and reference position/velocity in `controller_state`,
+   extrapolated over the age of that message), and the duration is lengthened until no joint exceeds speed scaling x URDF velocity
    limit (or the velocity it already has, which cannot change instantly).
 4. **Fail closed.** A pending edit waits until a controller state no older
-   than 0.5 s is available. Joints the user did not touch keep the value their
+   than 0.2 s is available. Joints the user did not touch keep the value their
    widget showed when control mode was enabled (as upstream), or the current
    position if the widget never received one. A joint without a finite, positive URDF velocity limit makes the
    command not to be sent (it stays pending).

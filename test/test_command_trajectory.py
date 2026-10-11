@@ -22,7 +22,10 @@ from rqt_joint_trajectory_controller.command_trajectory import (
     cubic_peak_velocity_rad_s,
 )
 
-AT_REST = [0.0]
+
+def at(*states):
+    """Candidate (position_rad, velocity_rad_s) start states of one joint."""
+    return list(states)
 
 
 def sampled_peak_velocity(distance, start_velocity, duration_s, samples=20000):
@@ -37,22 +40,29 @@ def sampled_peak_velocity(distance, start_velocity, duration_s, samples=20000):
 
 
 def test_small_motion_uses_min_duration_scaled():
-    assert command_duration_s([0.01], [0.0], [AT_REST], [1.0], 0.5, 0.5) == pytest.approx(1.0)
+    assert command_duration_s([0.01], [at((0.0, 0.0))], [1.0], 0.5, 0.5) == pytest.approx(1.0)
 
 
 def test_large_motion_from_rest_keeps_cubic_peak_at_scaled_max_velocity():
-    dur_s = command_duration_s([2.0, 0.0], [0.0, 0.0], [AT_REST, AT_REST], [1.0, 1.0], 0.5, 0.5)
+    dur_s = command_duration_s(
+        [2.0, 0.0], [at((0.0, 0.0)), at((0.0, 0.0))], [1.0, 1.0], 0.5, 0.5)
     assert CUBIC_PEAK_VELOCITY_FACTOR * 2.0 / dur_s == pytest.approx(0.5)
 
 
 def test_slowest_joint_sets_the_duration():
-    dur_s = command_duration_s([1.0, 1.0], [0.0, 0.0], [AT_REST, AT_REST], [2.0, 0.5], 0.0, 1.0)
+    dur_s = command_duration_s(
+        [1.0, 1.0], [at((0.0, 0.0)), at((0.0, 0.0))], [2.0, 0.5], 0.0, 1.0)
     assert dur_s == pytest.approx(CUBIC_PEAK_VELOCITY_FACTOR * 1.0 / 0.5)
 
 
 def test_rejects_non_positive_speed_scale():
     with pytest.raises(ValueError):
-        command_duration_s([1.0], [0.0], [AT_REST], [1.0], 0.5, 0.0)
+        command_duration_s([1.0], [at((0.0, 0.0))], [1.0], 0.5, 0.0)
+
+
+def test_rejects_joint_without_start_state():
+    with pytest.raises(ValueError):
+        command_duration_s([1.0], [at()], [1.0], 0.5, 1.0)
 
 
 @pytest.mark.parametrize('distance, v0, duration_s', [
@@ -65,25 +75,24 @@ def test_cubic_peak_velocity_matches_sampling(distance, v0, duration_s):
 
 def test_reversing_joint_in_flight_stays_within_scaled_limit():
     # Review case: moving at 0.55 rad/s, new target 2.31 rad away in the opposite direction.
-    max_vel, scale = 1.0, 1.0
-    dur_s = command_duration_s([-2.31], [0.0], [[0.55]], [max_vel], 0.5, scale)
-    assert sampled_peak_velocity(-2.31, 0.55, dur_s) <= max_vel * scale + 1e-6
+    dur_s = command_duration_s([-2.31], [at((0.0, 0.55))], [1.0], 0.5, 1.0)
+    assert sampled_peak_velocity(-2.31, 0.55, dur_s) <= 1.0 + 1e-6
 
 
-def test_every_candidate_start_velocity_is_respected():
-    # measured and reference velocities may differ; both must stay within the limit
-    dur_s = command_duration_s([-1.0], [0.0], [[0.0, 0.6]], [1.0], 0.1, 1.0)
+def test_every_candidate_start_state_is_respected():
+    # measured and reference states may differ in velocity and in position
+    dur_s = command_duration_s([-1.0], [at((0.0, 0.0), (0.4, 0.6))], [1.0], 0.1, 1.0)
     assert sampled_peak_velocity(-1.0, 0.0, dur_s) <= 1.0 + 1e-6
-    assert sampled_peak_velocity(-1.0, 0.6, dur_s) <= 1.0 + 1e-6
+    assert sampled_peak_velocity(-1.4, 0.6, dur_s) <= 1.0 + 1e-6
 
 
 def test_joint_already_faster_than_scaled_limit_is_not_accelerated_further():
     # e.g. speed scaling was just lowered; the joint cannot slow down instantly
-    dur_s = command_duration_s([1.0], [0.0], [[0.9]], [1.0], 0.1, 0.5)
+    dur_s = command_duration_s([1.0], [at((0.0, 0.9))], [1.0], 0.1, 0.5)
     assert sampled_peak_velocity(1.0, 0.9, dur_s) <= 0.9 + 1e-6
 
 
 @pytest.mark.parametrize('max_vel_rad_s', [0.0, -1.0, float('nan'), float('inf')])
 def test_invalid_velocity_limit_sends_nothing(max_vel_rad_s):
     with pytest.raises(ValueError):
-        command_duration_s([1.0], [0.0], [AT_REST], [max_vel_rad_s], 0.5, 1.0)
+        command_duration_s([1.0], [at((0.0, 0.0))], [max_vel_rad_s], 0.5, 1.0)

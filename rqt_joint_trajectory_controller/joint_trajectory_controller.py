@@ -101,8 +101,8 @@ class JointTrajectoryController(Plugin):
     _ctrlrs_update_freq = 1  # Hz
     _min_traj_dur = 5.0 / _cmd_pub_freq  # Minimum trajectory duration
     # Commands are held back while the controller state is older than this [s].
-    # Provisional: 5 command periods; the controller publishes state far faster.
-    _max_state_age_s = 5.0 / _cmd_pub_freq
+    # Provisional: 2 command periods; the controller publishes state far faster.
+    _max_state_age_s = 2.0 / _cmd_pub_freq
 
     jointStateChanged = Signal([dict])
 
@@ -329,9 +329,9 @@ class JointTrajectoryController(Plugin):
 
     def _on_joint_state_change(self, current_state):
         assert len(current_state) == len(self._joint_pos)
-        for name, (position, velocities) in current_state.items():
+        for name, (position, start_states) in current_state.items():
             self._joint_pos[name]["position"] = position
-            self._joint_pos[name]["velocities"] = velocities
+            self._joint_pos[name]["start_states"] = start_states
         self._state_stamp_s = time.monotonic()
 
     def _on_cm_change(self, cm_ns):
@@ -523,16 +523,18 @@ class JointTrajectoryController(Plugin):
             self._executor_thread = None
 
     def _state_cb(self, msg):
-        # Position plus the velocities the controller may start the next command from:
-        # measured (closed loop) and reference (open loop). Missing ones count as zero.
+        # Feedback position plus the (position, velocity) states the controller may
+        # start the next command from: measured (closed loop) and reference (open
+        # loop). A missing velocity counts as zero; a missing position is skipped.
         current_state = {}
         for i in range(len(msg.joint_names)):
             joint_name = msg.joint_names[i]
-            velocities = [
-                point.velocities[i] if i < len(point.velocities) else 0.0
+            start_states = [
+                (point.positions[i], point.velocities[i] if i < len(point.velocities) else 0.0)
                 for point in (msg.feedback, msg.reference)
+                if i < len(point.positions)
             ]
-            current_state[joint_name] = (msg.feedback.positions[i], velocities)
+            current_state[joint_name] = (msg.feedback.positions[i], start_states)
         self.jointStateChanged.emit(current_state)
 
     def _update_single_cmd_cb(self, val, name):
@@ -547,17 +549,25 @@ class JointTrajectoryController(Plugin):
         # Wait for a recent controller state; the edit stays pending until then
         if None in pos or self._state_stamp_s is None:
             return
-        if time.monotonic() - self._state_stamp_s > self._max_state_age_s:
+        state_age_s = time.monotonic() - self._state_stamp_s
+        if state_age_s > self._max_state_age_s:
             return
         # Joints whose widget was never set hold their current position
         for name, position in zip(self._joint_names, pos):
             self._joint_pos[name].setdefault("command", position)
         cmd = [self._joint_pos[name]["command"] for name in self._joint_names]
-        start_vel = [self._joint_pos[name].get("velocities", [0.0]) for name in self._joint_names]
+        # Extrapolate each candidate start state over the age of the state message
+        start_states = [
+            [
+                (pos_rad + vel_rad_s * state_age_s, vel_rad_s)
+                for pos_rad, vel_rad_s in self._joint_pos[name].get("start_states", [])
+            ]
+            for name in self._joint_names
+        ]
         max_vel = [self._robot_joint_limits[name]["max_velocity"] for name in self._joint_names]
         try:
             duration_s = command_duration_s(
-                cmd, pos, start_vel, max_vel, self._min_traj_dur, self._speed_scale
+                cmd, start_states, max_vel, self._min_traj_dur, self._speed_scale
             )
         except ValueError as e:
             # Fail closed: nothing is sent and the edit stays pending
