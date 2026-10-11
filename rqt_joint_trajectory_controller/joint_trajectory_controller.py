@@ -29,6 +29,7 @@ from python_qt_binding.QtWidgets import QWidget, QFormLayout
 from control_msgs.msg import JointTrajectoryControllerState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
+from .command_trajectory import command_duration_s, command_has_changed
 from .utils import ControllerLister, ControllerManagerLister, is_shutdown_context_error
 from .double_editor import DoubleEditor
 from .joint_limits_urdf import get_joint_limits, subscribe_to_robot_description
@@ -69,8 +70,10 @@ class JointTrajectoryController(Plugin):
           in monitor mode for safety reasons.
 
         2. B{Control mode} Joint displays update the control command that is
-        sent to the controller. Commands are sent periodically evan if the
-        displays are not being updated by the user.
+        sent to the controller. Commands are checked periodically and sent
+        only when the user has changed them. Each command carries zero target
+        velocities so that the controller blends it smoothly (cubic spline)
+        with the motion in progress.
 
     To control the aggressiveness of the motions, the maximum speed of the
     sent commands can be scaled down using the C{Speed scaling control}
@@ -157,6 +160,7 @@ class JointTrajectoryController(Plugin):
         self._joint_pos = {}  # name->pos map for joints of selected controller
         self._joint_names = []  # Ordered list of selected controller joints
         self._robot_joint_limits = {}  # Lazily evaluated on first use
+        self._last_sent_cmd = None  # Commands of the last published trajectory
 
         # Timer for sending commands to active controller
         self._update_cmd_timer = QTimer(self)
@@ -370,8 +374,10 @@ class JointTrajectoryController(Plugin):
         self._speed_scaling_widget.setEnabled(val)
 
         if val:
-            # Widgets send reference position commands to controller
+            # Widgets send reference position commands to controller.
+            # Nothing is sent until the user changes a command.
             self._update_act_pos_timer.stop()
+            self._last_sent_cmd = self._current_cmd()
             self._update_cmd_timer.start()
         else:
             # Controller updates widgets with feedback position
@@ -506,26 +512,35 @@ class JointTrajectoryController(Plugin):
     def _update_single_cmd_cb(self, val, name):
         self._joint_pos[name]["command"] = val
 
+    def _current_cmd(self):
+        # Joints whose widget was never touched keep their current position
+        cmd = []
+        for name in self._joint_names:
+            joint = self._joint_pos[name]
+            cmd.append(joint.get("command", joint.get("position")))
+        return cmd
+
     def _update_cmd_cb(self):
-        dur = []
+        cmd = self._current_cmd()
+        pos = [self._joint_pos[name].get("position") for name in self._joint_names]
+        # Wait for the controller state before sending anything
+        if None in cmd or None in pos or not command_has_changed(cmd, self._last_sent_cmd):
+            return
+        max_vel = [self._robot_joint_limits[name]["max_velocity"] for name in self._joint_names]
+        duration = rclpy.duration.Duration(
+            seconds=command_duration_s(cmd, pos, max_vel, self._min_traj_dur, self._speed_scale)
+        )
+
         traj = JointTrajectory()
         traj.joint_names = self._joint_names
         point = JointTrajectoryPoint()
-        for name in traj.joint_names:
-            pos = self._joint_pos[name]["position"]
-            cmd = pos
-            try:
-                cmd = self._joint_pos[name]["command"]
-            except KeyError:
-                pass
-            max_vel = self._robot_joint_limits[name]["max_velocity"]
-            dur.append(max(abs(cmd - pos) / max_vel, self._min_traj_dur))
-            point.positions.append(cmd)
-        duration = rclpy.duration.Duration(seconds=(max(dur) / self._speed_scale))
+        point.positions = cmd
+        point.velocities = [0.0] * len(cmd)
         point.time_from_start = duration.to_msg()
         traj.points.append(point)
 
         self._cmd_pub.publish(traj)
+        self._last_sent_cmd = cmd
 
     def _update_joint_widgets(self):
         joint_widgets = self._joint_widgets()
