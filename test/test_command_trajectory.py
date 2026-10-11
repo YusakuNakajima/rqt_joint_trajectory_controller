@@ -19,7 +19,6 @@ import pytest
 from rqt_joint_trajectory_controller.command_trajectory import (
     CUBIC_PEAK_VELOCITY_FACTOR,
     command_duration_s,
-    command_has_changed,
     cubic_peak_velocity_rad_s,
 )
 
@@ -88,9 +87,3 @@ def test_joint_already_faster_than_scaled_limit_is_not_accelerated_further():
 def test_invalid_velocity_limit_sends_nothing(max_vel_rad_s):
     with pytest.raises(ValueError):
         command_duration_s([1.0], [0.0], [AT_REST], [max_vel_rad_s], 0.5, 1.0)
-
-
-def test_command_has_changed():
-    assert command_has_changed([0.0, 1.0], None)
-    assert not command_has_changed([0.0, 1.0], [0.0, 1.0])
-    assert command_has_changed([0.0, 1.1], [0.0, 1.0])

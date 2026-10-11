@@ -16,11 +16,13 @@ joint_trajectory_controller interpolates position-only points linearly from its
 current state, so the velocity jumps on every command and real robots
 (e.g. UR with `scaled_joint_trajectory_controller`) move jerkily.
 
-1. **Send only when the command or the speed scaling changes.** Enabling
-   control mode sends nothing until a joint value is edited, and an unchanged
-   command is not re-sent. Changing the speed scaling re-sends the current
-   command (only if one was already sent in this control session), so the
-   motion in progress adopts the new speed, as with upstream.
+1. **Send only what the user edits.** In control mode the joint widgets are not
+   updated from the controller, so every value change there is a user edit; an
+   edit marks the command as pending and the next timer tick sends it once.
+   Enabling control mode, the arrival of the controller state, or sensor noise
+   never send anything. Changing the speed scaling re-sends the current command
+   only if one was already sent in this control session, so the motion in
+   progress adopts the new speed, as with upstream.
 2. **Zero target velocities in the command point.** The controller then uses a
    cubic spline from its current position *and velocity* to the target at rest,
    so a new command blends with the motion in progress with continuous velocity.
@@ -29,11 +31,11 @@ current state, so the velocity jumps on every command and real robots
    the measured and the reference velocity in `controller_state`), and the
    duration is lengthened until no joint exceeds speed scaling x URDF velocity
    limit (or the velocity it already has, which cannot change instantly).
-4. **Fail closed.** Enabling control mode only records the current state as the
-   baseline (untouched joints are frozen there), even if the controller state
-   arrives after enabling. Commands are held back while the controller state
-   is older than 0.5 s and sent once a fresh state arrives. A joint without a finite, positive URDF velocity
-   limit makes the command not to be sent.
+4. **Fail closed.** A pending edit waits until a controller state no older
+   than 0.5 s is available. Joints the user did not touch keep the value their
+   widget showed when control mode was enabled (as upstream), or the current
+   position if the widget never received one. A joint without a finite, positive URDF velocity limit makes the
+   command not to be sent (it stays pending).
 5. **Built with `ament_cmake`** instead of `ament_python` (`setup.py` removed).
 
 Not limited: joint acceleration and jerk (no validated limits are available).

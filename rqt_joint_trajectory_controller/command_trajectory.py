@@ -90,8 +90,3 @@ def command_duration_s(commands_rad, positions_rad, start_velocities_rad_s,
             return dur_s
         dur_s *= _DURATION_GROWTH
     raise ValueError("no duration keeps the joints within their velocity limits")
-
-
-def command_has_changed(commands, last_sent_commands):
-    """Return True when the commands differ from the last ones that were sent."""
-    return last_sent_commands is None or list(commands) != list(last_sent_commands)

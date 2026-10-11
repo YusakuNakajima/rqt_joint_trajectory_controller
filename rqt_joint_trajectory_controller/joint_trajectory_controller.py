@@ -30,7 +30,7 @@ from python_qt_binding.QtWidgets import QWidget, QFormLayout
 from control_msgs.msg import JointTrajectoryControllerState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from .command_trajectory import command_duration_s, command_has_changed
+from .command_trajectory import command_duration_s
 from .utils import ControllerLister, ControllerManagerLister, is_shutdown_context_error
 from .double_editor import DoubleEditor
 from .joint_limits_urdf import get_joint_limits, subscribe_to_robot_description
@@ -164,7 +164,10 @@ class JointTrajectoryController(Plugin):
         self._joint_pos = {}  # name->pos map for joints of selected controller
         self._joint_names = []  # Ordered list of selected controller joints
         self._robot_joint_limits = {}  # Lazily evaluated on first use
-        self._last_sent_cmd = None  # Commands + speed scale of the last published trajectory
+        # In control mode the widgets are not updated from the controller state, so
+        # every value change there is a user edit. Only edits (and speed scaling
+        # changes once something was sent) mark a command as pending.
+        self._cmd_pending = False  # A user edit has not been published yet
         self._sent_since_enabled = False  # A command was published in this control session
         self._state_stamp_s = None  # time.monotonic() of the last controller state [s]
 
@@ -316,6 +319,13 @@ class JointTrajectoryController(Plugin):
 
     def _on_speed_scaling_change(self, val):
         self._speed_scale = val / self._speed_scaling_widget.slider.maximum()
+        # Re-send so that the motion in progress adopts the new speed
+        if self._in_control_mode() and self._sent_since_enabled:
+            self._cmd_pending = True
+
+    def _in_control_mode(self):
+        timer = getattr(self, "_update_cmd_timer", None)
+        return timer is not None and timer.isActive()
 
     def _on_joint_state_change(self, current_state):
         assert len(current_state) == len(self._joint_pos)
@@ -385,8 +395,8 @@ class JointTrajectoryController(Plugin):
             # Widgets send reference position commands to controller.
             # Nothing is sent until the user changes a command.
             self._update_act_pos_timer.stop()
-            # The baseline is taken in _update_cmd_cb once the controller state is known
-            self._last_sent_cmd = None
+            # Nothing is pending until the user edits a joint value
+            self._cmd_pending = False
             self._sent_since_enabled = False
             self._update_cmd_timer.start()
         else:
@@ -527,40 +537,22 @@ class JointTrajectoryController(Plugin):
 
     def _update_single_cmd_cb(self, val, name):
         self._joint_pos[name]["command"] = val
-
-    def _current_cmd(self):
-        # Joints whose widget was never touched keep their current position
-        cmd = []
-        for name in self._joint_names:
-            joint = self._joint_pos[name]
-            cmd.append(joint.get("command", joint.get("position")))
-        return cmd
+        if self._in_control_mode():
+            self._cmd_pending = True
 
     def _update_cmd_cb(self):
-        cmd = self._current_cmd()
+        if not self._cmd_pending:
+            return
         pos = [self._joint_pos[name].get("position") for name in self._joint_names]
-        # Wait for a recent controller state before sending anything; a pending
-        # command is sent once a fresh state arrives
-        if None in cmd or None in pos or self._state_stamp_s is None:
+        # Wait for a recent controller state; the edit stays pending until then
+        if None in pos or self._state_stamp_s is None:
             return
         if time.monotonic() - self._state_stamp_s > self._max_state_age_s:
             return
-        sent_state = cmd + [self._speed_scale]
-        if self._last_sent_cmd is None:
-            # First complete state in this control session: freeze untouched joints at
-            # their current position and take it as the baseline without sending.
-            for name, value in zip(self._joint_names, cmd):
-                self._joint_pos[name]["command"] = value
-            self._last_sent_cmd = sent_state
-            return
-        if not command_has_changed(sent_state, self._last_sent_cmd):
-            return
-        if not self._sent_since_enabled and not command_has_changed(
-            cmd, self._last_sent_cmd[:-1]
-        ):
-            # Only the speed scale changed and nothing is moving on our behalf yet
-            self._last_sent_cmd = sent_state
-            return
+        # Joints whose widget was never set hold their current position
+        for name, position in zip(self._joint_names, pos):
+            self._joint_pos[name].setdefault("command", position)
+        cmd = [self._joint_pos[name]["command"] for name in self._joint_names]
         start_vel = [self._joint_pos[name].get("velocities", [0.0]) for name in self._joint_names]
         max_vel = [self._robot_joint_limits[name]["max_velocity"] for name in self._joint_names]
         try:
@@ -568,7 +560,7 @@ class JointTrajectoryController(Plugin):
                 cmd, pos, start_vel, max_vel, self._min_traj_dur, self._speed_scale
             )
         except ValueError as e:
-            # Fail closed: keep the last command and do not mark this one as sent
+            # Fail closed: nothing is sent and the edit stays pending
             print(f"Command not sent: {e}")
             return
         duration = rclpy.duration.Duration(seconds=duration_s)
@@ -582,7 +574,7 @@ class JointTrajectoryController(Plugin):
         traj.points.append(point)
 
         self._cmd_pub.publish(traj)
-        self._last_sent_cmd = sent_state
+        self._cmd_pending = False
         self._sent_since_enabled = True
 
     def _update_joint_widgets(self):
