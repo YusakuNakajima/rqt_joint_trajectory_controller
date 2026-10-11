@@ -160,7 +160,8 @@ class JointTrajectoryController(Plugin):
         self._joint_pos = {}  # name->pos map for joints of selected controller
         self._joint_names = []  # Ordered list of selected controller joints
         self._robot_joint_limits = {}  # Lazily evaluated on first use
-        self._last_sent_cmd = None  # Commands of the last published trajectory
+        self._last_sent_cmd = None  # Commands + speed scale of the last published trajectory
+        self._sent_since_enabled = False  # A command was published in this control session
 
         # Timer for sending commands to active controller
         self._update_cmd_timer = QTimer(self)
@@ -311,10 +312,11 @@ class JointTrajectoryController(Plugin):
     def _on_speed_scaling_change(self, val):
         self._speed_scale = val / self._speed_scaling_widget.slider.maximum()
 
-    def _on_joint_state_change(self, current_pos):
-        assert len(current_pos) == len(self._joint_pos)
-        for name in current_pos.keys():
-            self._joint_pos[name]["position"] = current_pos[name]
+    def _on_joint_state_change(self, current_state):
+        assert len(current_state) == len(self._joint_pos)
+        for name, (position, velocities) in current_state.items():
+            self._joint_pos[name]["position"] = position
+            self._joint_pos[name]["velocities"] = velocities
 
     def _on_cm_change(self, cm_ns):
         self._cm_ns = cm_ns
@@ -377,7 +379,8 @@ class JointTrajectoryController(Plugin):
             # Widgets send reference position commands to controller.
             # Nothing is sent until the user changes a command.
             self._update_act_pos_timer.stop()
-            self._last_sent_cmd = self._current_cmd()
+            self._last_sent_cmd = self._current_cmd() + [self._speed_scale]
+            self._sent_since_enabled = False
             self._update_cmd_timer.start()
         else:
             # Controller updates widgets with feedback position
@@ -502,12 +505,17 @@ class JointTrajectoryController(Plugin):
             self._executor_thread = None
 
     def _state_cb(self, msg):
-        current_pos = {}
+        # Position plus the velocities the controller may start the next command from:
+        # measured (closed loop) and reference (open loop). Missing ones count as zero.
+        current_state = {}
         for i in range(len(msg.joint_names)):
             joint_name = msg.joint_names[i]
-            joint_pos = msg.feedback.positions[i]
-            current_pos[joint_name] = joint_pos
-        self.jointStateChanged.emit(current_pos)
+            velocities = [
+                point.velocities[i] if i < len(point.velocities) else 0.0
+                for point in (msg.feedback, msg.reference)
+            ]
+            current_state[joint_name] = (msg.feedback.positions[i], velocities)
+        self.jointStateChanged.emit(current_state)
 
     def _update_single_cmd_cb(self, val, name):
         self._joint_pos[name]["command"] = val
@@ -524,11 +532,23 @@ class JointTrajectoryController(Plugin):
         cmd = self._current_cmd()
         pos = [self._joint_pos[name].get("position") for name in self._joint_names]
         # Wait for the controller state before sending anything
-        if None in cmd or None in pos or not command_has_changed(cmd, self._last_sent_cmd):
+        if None in cmd or None in pos:
             return
+        sent_state = cmd + [self._speed_scale]
+        if not command_has_changed(sent_state, self._last_sent_cmd):
+            return
+        if not self._sent_since_enabled and not command_has_changed(
+            cmd, self._last_sent_cmd[:-1]
+        ):
+            # Only the speed scale changed and nothing is moving on our behalf yet
+            self._last_sent_cmd = sent_state
+            return
+        start_vel = [self._joint_pos[name].get("velocities", [0.0]) for name in self._joint_names]
         max_vel = [self._robot_joint_limits[name]["max_velocity"] for name in self._joint_names]
         duration = rclpy.duration.Duration(
-            seconds=command_duration_s(cmd, pos, max_vel, self._min_traj_dur, self._speed_scale)
+            seconds=command_duration_s(
+                cmd, pos, start_vel, max_vel, self._min_traj_dur, self._speed_scale
+            )
         )
 
         traj = JointTrajectory()
@@ -540,7 +560,8 @@ class JointTrajectoryController(Plugin):
         traj.points.append(point)
 
         self._cmd_pub.publish(traj)
-        self._last_sent_cmd = cmd
+        self._last_sent_cmd = sent_state
+        self._sent_since_enabled = True
 
     def _update_joint_widgets(self):
         joint_widgets = self._joint_widgets()

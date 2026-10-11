@@ -23,22 +23,58 @@ consecutive commands join with continuous velocity.
 
 # Peak velocity of a rest-to-rest cubic segment is 1.5 * distance / duration.
 CUBIC_PEAK_VELOCITY_FACTOR = 1.5
+# Duration growth per step while searching for a duration that respects the limits.
+_DURATION_GROWTH = 1.05
+_MAX_DURATION_STEPS = 400
 
 
-def command_duration_s(commands_rad, positions_rad, max_velocities_rad_s, min_duration_s,
+def cubic_peak_velocity(distance, start_velocity, duration_s):
+    """
+    Return the largest |velocity| of the cubic used by joint_trajectory_controller.
+
+    The cubic starts with start_velocity and ends at rest, distance away, after duration_s.
+    """
+    t = duration_s
+    a = (start_velocity * t - 2.0 * distance) / t ** 3
+    b = (3.0 * distance - 2.0 * start_velocity * t) / t ** 2
+    peak = abs(start_velocity)  # the velocity at t = duration_s is zero
+    if a != 0.0:
+        t_vertex = -b / (3.0 * a)
+        if 0.0 < t_vertex < t:
+            peak = max(peak, abs(3.0 * a * t_vertex ** 2 + 2.0 * b * t_vertex + start_velocity))
+    return peak
+
+
+def command_duration_s(commands, positions, start_velocities, max_velocities, min_duration_s,
                        speed_scale):
     """
     Return the duration of the command segment in seconds.
 
-    Chosen so that, starting from rest, no joint exceeds speed_scale times its
-    maximum velocity, and never shorter than min_duration_s / speed_scale.
+    Every joint's velocity stays within speed_scale x its maximum velocity, or within
+    the velocity it already has if that is larger (it cannot change instantly). The
+    duration is never shorter than min_duration_s / speed_scale. start_velocities may
+    contain several candidates per joint (e.g. measured and reference velocity); all
+    of them are respected.
     """
     if speed_scale <= 0.0:
         raise ValueError("speed_scale must be positive")
-    dur_s = [min_duration_s]
-    for cmd, pos, max_vel in zip(commands_rad, positions_rad, max_velocities_rad_s):
-        dur_s.append(CUBIC_PEAK_VELOCITY_FACTOR * abs(cmd - pos) / max_vel)
-    return max(dur_s) / speed_scale
+    joints = []
+    dur_s = min_duration_s / speed_scale
+    for cmd, pos, v0s, max_vel in zip(commands, positions, start_velocities, max_velocities):
+        distance = cmd - pos
+        limit = max_vel * speed_scale
+        dur_s = max(dur_s, CUBIC_PEAK_VELOCITY_FACTOR * abs(distance) / limit)
+        joints.append((distance, v0s, limit))
+
+    for _ in range(_MAX_DURATION_STEPS):
+        if all(
+            cubic_peak_velocity(distance, v0, dur_s) <= max(limit, abs(v0)) * (1.0 + 1e-9)
+            for distance, v0s, limit in joints
+            for v0 in v0s
+        ):
+            return dur_s
+        dur_s *= _DURATION_GROWTH
+    raise ValueError("no duration keeps the joints within their velocity limits")
 
 
 def command_has_changed(commands, last_sent_commands):

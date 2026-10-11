@@ -16,13 +16,19 @@ joint_trajectory_controller interpolates position-only points linearly from its
 current state, so the velocity jumps on every command and real robots
 (e.g. UR with `scaled_joint_trajectory_controller`) move jerkily.
 
-1. **Send only when the command changes.** Enabling control mode sends nothing
-   until a joint value is edited, and an unchanged command is not re-sent.
+1. **Send only when the command or the speed scaling changes.** Enabling
+   control mode sends nothing until a joint value is edited, and an unchanged
+   command is not re-sent. Changing the speed scaling re-sends the current
+   command (only if one was already sent in this control session), so the
+   motion in progress adopts the new speed, as with upstream.
 2. **Zero target velocities in the command point.** The controller then uses a
    cubic spline from its current position *and velocity* to the target at rest,
    so a new command blends with the motion in progress with continuous velocity.
-3. **Duration accounts for the cubic peak velocity** (1.5 x average), so that,
-   starting from rest, no joint exceeds speed scaling x URDF velocity limit.
+3. **Velocity-limited duration that accounts for the motion in progress.** The
+   cubic's peak velocity is computed from each joint's starting velocity (both
+   the measured and the reference velocity in `controller_state`), and the
+   duration is lengthened until no joint exceeds speed scaling x URDF velocity
+   limit (or the velocity it already has, which cannot change instantly).
 4. **Built with `ament_cmake`** instead of `ament_python` (`setup.py` removed).
 
 The UI and every other behavior are unchanged. Disabling control mode still
