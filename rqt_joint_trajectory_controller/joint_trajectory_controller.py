@@ -379,7 +379,8 @@ class JointTrajectoryController(Plugin):
             # Widgets send reference position commands to controller.
             # Nothing is sent until the user changes a command.
             self._update_act_pos_timer.stop()
-            self._last_sent_cmd = self._current_cmd() + [self._speed_scale]
+            # The baseline is taken in _update_cmd_cb once the controller state is known
+            self._last_sent_cmd = None
             self._sent_since_enabled = False
             self._update_cmd_timer.start()
         else:
@@ -535,6 +536,13 @@ class JointTrajectoryController(Plugin):
         if None in cmd or None in pos:
             return
         sent_state = cmd + [self._speed_scale]
+        if self._last_sent_cmd is None:
+            # First complete state in this control session: freeze untouched joints at
+            # their current position and take it as the baseline without sending.
+            for name, value in zip(self._joint_names, cmd):
+                self._joint_pos[name]["command"] = value
+            self._last_sent_cmd = sent_state
+            return
         if not command_has_changed(sent_state, self._last_sent_cmd):
             return
         if not self._sent_since_enabled and not command_has_changed(
@@ -545,11 +553,15 @@ class JointTrajectoryController(Plugin):
             return
         start_vel = [self._joint_pos[name].get("velocities", [0.0]) for name in self._joint_names]
         max_vel = [self._robot_joint_limits[name]["max_velocity"] for name in self._joint_names]
-        duration = rclpy.duration.Duration(
-            seconds=command_duration_s(
+        try:
+            duration_s = command_duration_s(
                 cmd, pos, start_vel, max_vel, self._min_traj_dur, self._speed_scale
             )
-        )
+        except ValueError as e:
+            # Fail closed: keep the last command and do not mark this one as sent
+            print(f"Command not sent: {e}")
+            return
+        duration = rclpy.duration.Duration(seconds=duration_s)
 
         traj = JointTrajectory()
         traj.joint_names = self._joint_names

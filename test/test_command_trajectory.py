@@ -20,7 +20,7 @@ from rqt_joint_trajectory_controller.command_trajectory import (
     CUBIC_PEAK_VELOCITY_FACTOR,
     command_duration_s,
     command_has_changed,
-    cubic_peak_velocity,
+    cubic_peak_velocity_rad_s,
 )
 
 AT_REST = [0.0]
@@ -60,7 +60,7 @@ def test_rejects_non_positive_speed_scale():
     (1.0, 0.0, 2.0), (-2.31, 0.55, 3.0), (2.31, -0.55, 3.465), (0.1, 0.8, 0.5), (0.0, 0.3, 1.0),
 ])
 def test_cubic_peak_velocity_matches_sampling(distance, v0, duration_s):
-    assert cubic_peak_velocity(distance, v0, duration_s) == pytest.approx(
+    assert cubic_peak_velocity_rad_s(distance, v0, duration_s) == pytest.approx(
         sampled_peak_velocity(distance, v0, duration_s), rel=1e-4)
 
 
@@ -82,6 +82,12 @@ def test_joint_already_faster_than_scaled_limit_is_not_accelerated_further():
     # e.g. speed scaling was just lowered; the joint cannot slow down instantly
     dur_s = command_duration_s([1.0], [0.0], [[0.9]], [1.0], 0.1, 0.5)
     assert sampled_peak_velocity(1.0, 0.9, dur_s) <= 0.9 + 1e-6
+
+
+@pytest.mark.parametrize('max_vel_rad_s', [0.0, -1.0, float('nan'), float('inf')])
+def test_invalid_velocity_limit_sends_nothing(max_vel_rad_s):
+    with pytest.raises(ValueError):
+        command_duration_s([1.0], [0.0], [AT_REST], [max_vel_rad_s], 0.5, 1.0)
 
 
 def test_command_has_changed():

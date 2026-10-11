@@ -29,7 +29,16 @@ current state, so the velocity jumps on every command and real robots
    the measured and the reference velocity in `controller_state`), and the
    duration is lengthened until no joint exceeds speed scaling x URDF velocity
    limit (or the velocity it already has, which cannot change instantly).
-4. **Built with `ament_cmake`** instead of `ament_python` (`setup.py` removed).
+4. **Fail closed.** Enabling control mode only records the current state as the
+   baseline (untouched joints are frozen there), even if the controller state
+   arrives after enabling. A joint without a finite, positive URDF velocity
+   limit makes the command not to be sent.
+5. **Built with `ament_cmake`** instead of `ament_python` (`setup.py` removed).
+
+Not limited: joint acceleration and jerk (no validated limits are available).
+A cubic command keeps them finite, whereas upstream's position-only command
+changes the velocity instantaneously, but a short duration can still mean a
+large acceleration. Keep the speed scaling low on real robots.
 
 The UI and every other behavior are unchanged. Disabling control mode still
 lets the last command finish (it does not stop the robot).
