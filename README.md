@@ -36,7 +36,10 @@ current state, so the velocity jumps on every command and real robots
    widget showed when control mode was enabled (as upstream), or the current
    position if the widget never received one. A joint without a finite, positive URDF velocity limit makes the
    command not to be sent (it stays pending).
-5. **Built with `ament_cmake`** instead of `ament_python` (`setup.py` removed).
+5. **Initial speed scaling 30 %** (upstream: 50 %), set at the operator's
+   request after the first UR7e test on 2026-10-11 (not tuned by experiment;
+   that test ran at the old 50 % default).
+6. **Built with `ament_cmake`** instead of `ament_python` (`setup.py` removed).
 
 Not limited: joint acceleration and jerk (no validated limits are available).
 A cubic command keeps them finite, whereas upstream's position-only command

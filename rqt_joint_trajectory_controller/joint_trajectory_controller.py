@@ -138,7 +138,9 @@ class JointTrajectoryController(Plugin):
         # Setup speed scaler
         speed_scaling = DoubleEditor(1.0, 100.0)
         speed_scaling.spin_box.setSuffix("%")
-        speed_scaling.spin_box.setValue(50.0)
+        # Initial speed scaling [%]. Upstream: 50. Lowered to 30 at the operator's
+        # request after the first UR7e test (2026-10-11); not tuned by experiment.
+        speed_scaling.spin_box.setValue(30.0)
         speed_scaling.spin_box.setDecimals(0)
         speed_scaling.setEnabled(False)
         self._widget.speed_scaling_layout.addWidget(speed_scaling)
