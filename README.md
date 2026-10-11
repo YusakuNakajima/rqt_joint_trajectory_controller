@@ -31,7 +31,8 @@ current state, so the velocity jumps on every command and real robots
    limit (or the velocity it already has, which cannot change instantly).
 4. **Fail closed.** Enabling control mode only records the current state as the
    baseline (untouched joints are frozen there), even if the controller state
-   arrives after enabling. A joint without a finite, positive URDF velocity
+   arrives after enabling. Commands are held back while the controller state
+   is older than 0.5 s and sent once a fresh state arrives. A joint without a finite, positive URDF velocity
    limit makes the command not to be sent.
 5. **Built with `ament_cmake`** instead of `ament_python` (`setup.py` removed).
 

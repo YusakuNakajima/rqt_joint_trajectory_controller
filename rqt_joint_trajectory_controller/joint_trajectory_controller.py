@@ -17,6 +17,7 @@
 import os
 import rclpy
 import threading
+import time
 from ament_index_python.packages import get_package_share_directory
 
 from qt_gui.plugin import Plugin
@@ -99,6 +100,9 @@ class JointTrajectoryController(Plugin):
     _widget_update_freq = 30.0  # Hz
     _ctrlrs_update_freq = 1  # Hz
     _min_traj_dur = 5.0 / _cmd_pub_freq  # Minimum trajectory duration
+    # Commands are held back while the controller state is older than this [s].
+    # Provisional: 5 command periods; the controller publishes state far faster.
+    _max_state_age_s = 5.0 / _cmd_pub_freq
 
     jointStateChanged = Signal([dict])
 
@@ -162,6 +166,7 @@ class JointTrajectoryController(Plugin):
         self._robot_joint_limits = {}  # Lazily evaluated on first use
         self._last_sent_cmd = None  # Commands + speed scale of the last published trajectory
         self._sent_since_enabled = False  # A command was published in this control session
+        self._state_stamp_s = None  # time.monotonic() of the last controller state [s]
 
         # Timer for sending commands to active controller
         self._update_cmd_timer = QTimer(self)
@@ -317,6 +322,7 @@ class JointTrajectoryController(Plugin):
         for name, (position, velocities) in current_state.items():
             self._joint_pos[name]["position"] = position
             self._joint_pos[name]["velocities"] = velocities
+        self._state_stamp_s = time.monotonic()
 
     def _on_cm_change(self, cm_ns):
         self._cm_ns = cm_ns
@@ -474,6 +480,7 @@ class JointTrajectoryController(Plugin):
         # Reset joint data
         self._joint_names = []
         self._joint_pos = {}
+        self._state_stamp_s = None
 
         # Enforce monitor mode (sending commands disabled)
         self._widget.enable_button.setChecked(False)
@@ -532,8 +539,11 @@ class JointTrajectoryController(Plugin):
     def _update_cmd_cb(self):
         cmd = self._current_cmd()
         pos = [self._joint_pos[name].get("position") for name in self._joint_names]
-        # Wait for the controller state before sending anything
-        if None in cmd or None in pos:
+        # Wait for a recent controller state before sending anything; a pending
+        # command is sent once a fresh state arrives
+        if None in cmd or None in pos or self._state_stamp_s is None:
+            return
+        if time.monotonic() - self._state_stamp_s > self._max_state_age_s:
             return
         sent_state = cmd + [self._speed_scale]
         if self._last_sent_cmd is None:
